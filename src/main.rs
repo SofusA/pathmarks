@@ -6,6 +6,10 @@ use std::path::{Path, PathBuf};
 use clap::{Parser, Subcommand};
 use nucleo_picker::{Picker, render::StrRenderer};
 
+use crate::error::{AppError, AppResult};
+
+mod error;
+
 #[derive(Parser)]
 #[command(name = "pathmarks")]
 #[command(about = "Path bookmark manager", version)]
@@ -23,21 +27,18 @@ enum Cmd {
     Pick,
 }
 
-fn bookmarks_file() -> io::Result<PathBuf> {
+fn bookmarks_file() -> AppResult<PathBuf> {
     let file = if let Some(cfg) = dirs::config_dir() {
         cfg.join("pathmarks").join("bookmarks")
     } else if let Some(home) = dirs::home_dir() {
         home.join(".bookmarks")
     } else {
-        return Err(io::Error::new(
-            io::ErrorKind::NotFound,
-            "Could not determine home/config directory",
-        ));
+        return Err(AppError::ConfigOrHomeNotFound);
     };
     Ok(file)
 }
 
-fn read_bookmarks() -> io::Result<Vec<String>> {
+fn read_bookmarks() -> AppResult<Vec<String>> {
     let file = bookmarks_file()?;
     let f = File::open(&file)?;
     let reader = BufReader::new(f);
@@ -52,7 +53,7 @@ fn read_bookmarks() -> io::Result<Vec<String>> {
     Ok(v)
 }
 
-fn write_bookmarks(v: &[String]) -> io::Result<()> {
+fn write_bookmarks(v: &[String]) -> AppResult<()> {
     let file = bookmarks_file()?;
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent)?;
@@ -72,87 +73,53 @@ fn is_abs(p: &str) -> bool {
     Path::new(p).is_absolute()
 }
 
-fn pick_one(items: &[String]) -> io::Result<Option<String>> {
+fn pick_one(items: &[String]) -> AppResult<Option<String>> {
     let mut picker = Picker::new(StrRenderer);
     let injector = picker.injector();
     for s in items {
         injector.push(s.clone());
     }
-    picker
-        .pick()
-        .map(|opt| opt.map(|s| s.to_string()))
-        .map_err(io::Error::other) // TODO
+    Ok(picker.pick()?.map(|s| s.to_string()))
 }
 
-fn main() {
+fn main() -> AppResult<()> {
     let cli = Cli::parse();
     match cli.command {
         Cmd::Save => {
             let cwd = env::current_dir()
                 .map(|p| p.to_string_lossy().to_string())
-                .unwrap_or_else(|_| {
-                    eprintln!("Failed to get current directory");
-                    std::process::exit(1);
-                });
+                .map_err(AppError::Io)?;
             let mut v = match read_bookmarks() {
                 Ok(v) => v,
-                Err(e) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-                Err(e) => {
-                    eprintln!("{}", e);
-                    std::process::exit(1);
-                }
+                Err(AppError::Io(e)) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
+                Err(e) => return Err(e),
             };
             if !v.iter().any(|s| s == &cwd) {
                 v.push(cwd);
             }
-            if let Err(e) = write_bookmarks(&v) {
-                eprintln!("{}", e);
-                std::process::exit(1);
-            }
+            write_bookmarks(&v)?;
         }
         Cmd::Remove { path } => {
-            let mut v = match read_bookmarks() {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("{}", e);
-                    std::process::exit(1);
-                }
-            };
+            let mut v = read_bookmarks()?;
             let target = if let Some(p) = path {
                 if !is_abs(&p) {
-                    eprintln!("Path must be absolute");
-                    std::process::exit(1);
+                    return Err(AppError::InvalidPath);
                 }
                 Some(p)
             } else {
-                match pick_one(&v) {
-                    Ok(opt) => opt,
-                    Err(e) => {
-                        eprintln!("{}", e);
-                        std::process::exit(1);
-                    }
-                }
+                pick_one(&v)?
             };
             if let Some(t) = target {
                 let before = v.len();
                 v.retain(|s| s != &t);
                 if v.len() == before {
-                    eprintln!("Not found");
-                    std::process::exit(2);
+                    return Err(AppError::NotFound(t));
                 }
-                if let Err(e) = write_bookmarks(&v) {
-                    eprintln!("{}", e);
-                    std::process::exit(1);
-                }
-                println!("{}", t);
+                write_bookmarks(&v)?;
             }
         }
-
         Cmd::Prune => {
-            let v = read_bookmarks().unwrap_or_else(|e| {
-                eprintln!("{}", e);
-                std::process::exit(1)
-            });
+            let v = read_bookmarks()?;
             let before = v.len();
             let mut kept = Vec::new();
             for s in v {
@@ -161,42 +128,30 @@ fn main() {
                 }
             }
             let removed = before.saturating_sub(kept.len());
-            if let Err(e) = write_bookmarks(&kept) {
-                eprintln!("{}", e);
-                std::process::exit(1);
-            }
+            write_bookmarks(&kept)?;
             println!("{}", removed);
         }
-
         Cmd::List => match read_bookmarks() {
             Ok(v) if !v.is_empty() => {
                 for s in v {
                     println!("{}", s);
                 }
             }
-            Ok(_) => eprintln!("No bookmarks found"),
-            Err(e) => {
-                eprintln!("{}", e);
-                std::process::exit(1);
+            Ok(_) => {
+                eprintln!("No bookmarks found");
             }
+            Err(AppError::Io(e)) if e.kind() == io::ErrorKind::NotFound => {
+                eprintln!("No bookmarks found");
+            }
+            Err(e) => return Err(e),
         },
-
         Cmd::Pick => {
-            let v = match read_bookmarks() {
-                Ok(v) => v,
-                Err(e) => {
-                    eprintln!("{}", e);
-                    std::process::exit(1);
-                }
-            };
-            match pick_one(&v) {
-                Ok(Some(s)) => println!("{}", s),
-                Ok(None) => std::process::exit(1),
-                Err(e) => {
-                    eprintln!("{}", e);
-                    std::process::exit(1);
-                }
+            let v = read_bookmarks()?;
+            match pick_one(&v)? {
+                Some(s) => println!("{}", s),
+                None => std::process::exit(1),
             }
         }
     }
+    Ok(())
 }

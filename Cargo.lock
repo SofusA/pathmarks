@@ -358,12 +358,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "pathmark"
+name = "pathmarks"
 version = "0.1.0"
 dependencies = [
  "clap",
  "dirs",
  "nucleo-picker",
+ "thiserror 1.0.69",
 ]
 
 [[package]]
