@@ -3,7 +3,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use nucleo_picker::{Picker, render::StrRenderer};
 
 use crate::error::{AppError, AppResult};
@@ -21,65 +21,74 @@ struct Cli {
 #[derive(Subcommand)]
 enum Cmd {
     Save,
-    Remove { path: Option<String> },
+    Remove {
+        path: Option<String>,
+    },
     Prune,
     List,
     Pick,
+    Init {
+        shell: Shell,
+        command: Option<String>,
+    },
+}
+
+#[derive(Copy, Clone, ValueEnum)]
+enum Shell {
+    Fish,
 }
 
 fn bookmarks_file() -> AppResult<PathBuf> {
-    let file = if let Some(cfg) = dirs::config_dir() {
-        cfg.join("pathmarks").join("bookmarks")
-    } else if let Some(home) = dirs::home_dir() {
-        home.join(".bookmarks")
+    let file = if let Some(data_dir) = dirs::data_local_dir() {
+        data_dir.join("pathmarks").join("bookmarks.txt")
     } else {
-        return Err(AppError::ConfigOrHomeNotFound);
+        return Err(AppError::DataDirectoryNotFound);
     };
     Ok(file)
 }
 
 fn read_bookmarks() -> AppResult<Vec<String>> {
     let file = bookmarks_file()?;
-    let f = File::open(&file)?;
-    let reader = BufReader::new(f);
-    let mut v = Vec::new();
+    let file = File::open(&file)?;
+    let reader = BufReader::new(file);
+    let mut bookmarks = Vec::new();
     for line in reader.lines() {
-        let s = line?;
-        let s = s.trim().to_string();
-        if !s.is_empty() {
-            v.push(s);
+        let line = line?;
+        let line = line.trim().to_string();
+        if !line.is_empty() {
+            bookmarks.push(line);
         }
     }
-    Ok(v)
+    Ok(bookmarks)
 }
 
-fn write_bookmarks(v: &[String]) -> AppResult<()> {
+fn write_bookmarks(bookmarks: &[String]) -> AppResult<()> {
     let file = bookmarks_file()?;
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut f = OpenOptions::new()
+    let mut file = OpenOptions::new()
         .write(true)
         .truncate(true)
         .create(true)
         .open(file)?;
-    for s in v {
-        writeln!(f, "{}", s)?;
+    for bookmark in bookmarks {
+        writeln!(file, "{}", bookmark)?;
     }
     Ok(())
 }
 
-fn is_abs(p: &str) -> bool {
+fn is_absolute(p: &str) -> bool {
     Path::new(p).is_absolute()
 }
 
-fn pick_one(items: &[String]) -> AppResult<Option<String>> {
+fn pick_one(bookmarks: &[String]) -> AppResult<Option<String>> {
     let mut picker = Picker::new(StrRenderer);
     let injector = picker.injector();
-    for s in items {
-        injector.push(s.clone());
+    for bookmark in bookmarks {
+        injector.push(bookmark.clone());
     }
-    Ok(picker.pick()?.map(|s| s.to_string()))
+    Ok(picker.pick()?.map(|bookmark| bookmark.to_string()))
 }
 
 fn main() -> AppResult<()> {
@@ -87,44 +96,44 @@ fn main() -> AppResult<()> {
     match cli.command {
         Cmd::Save => {
             let cwd = env::current_dir()
-                .map(|p| p.to_string_lossy().to_string())
+                .map(|path| path.to_string_lossy().to_string())
                 .map_err(AppError::Io)?;
-            let mut v = match read_bookmarks() {
-                Ok(v) => v,
-                Err(AppError::Io(e)) if e.kind() == io::ErrorKind::NotFound => Vec::new(),
-                Err(e) => return Err(e),
+            let mut bookmarks = match read_bookmarks() {
+                Ok(bookmarks) => bookmarks,
+                Err(AppError::Io(error)) if error.kind() == io::ErrorKind::NotFound => Vec::new(),
+                Err(error) => return Err(error),
             };
-            if !v.iter().any(|s| s == &cwd) {
-                v.push(cwd);
+            if !bookmarks.iter().any(|bookmark| bookmark == &cwd) {
+                bookmarks.push(cwd);
             }
-            write_bookmarks(&v)?;
+            write_bookmarks(&bookmarks)?;
         }
         Cmd::Remove { path } => {
-            let mut v = read_bookmarks()?;
-            let target = if let Some(p) = path {
-                if !is_abs(&p) {
+            let mut bookmarks = read_bookmarks()?;
+            let target = if let Some(path) = path {
+                if !is_absolute(&path) {
                     return Err(AppError::InvalidPath);
                 }
-                Some(p)
+                Some(path)
             } else {
-                pick_one(&v)?
+                pick_one(&bookmarks)?
             };
-            if let Some(t) = target {
-                let before = v.len();
-                v.retain(|s| s != &t);
-                if v.len() == before {
-                    return Err(AppError::NotFound(t));
+            if let Some(target) = target {
+                let before = bookmarks.len();
+                bookmarks.retain(|s| s != &target);
+                if bookmarks.len() == before {
+                    return Err(AppError::NotFound(target));
                 }
-                write_bookmarks(&v)?;
+                write_bookmarks(&bookmarks)?;
             }
         }
         Cmd::Prune => {
-            let v = read_bookmarks()?;
-            let before = v.len();
+            let bookmarks = read_bookmarks()?;
+            let before = bookmarks.len();
             let mut kept = Vec::new();
-            for s in v {
-                if Path::new(&s).exists() {
-                    kept.push(s);
+            for bookmark in bookmarks {
+                if Path::new(&bookmark).exists() {
+                    kept.push(bookmark);
                 }
             }
             let removed = before.saturating_sub(kept.len());
@@ -132,26 +141,46 @@ fn main() -> AppResult<()> {
             println!("{}", removed);
         }
         Cmd::List => match read_bookmarks() {
-            Ok(v) if !v.is_empty() => {
-                for s in v {
-                    println!("{}", s);
+            Ok(bookmarks) if !bookmarks.is_empty() => {
+                for bookmark in bookmarks {
+                    println!("{}", bookmark);
                 }
             }
             Ok(_) => {
                 eprintln!("No bookmarks found");
             }
-            Err(AppError::Io(e)) if e.kind() == io::ErrorKind::NotFound => {
+            Err(AppError::Io(error)) if error.kind() == io::ErrorKind::NotFound => {
                 eprintln!("No bookmarks found");
             }
-            Err(e) => return Err(e),
+            Err(error) => return Err(error),
         },
         Cmd::Pick => {
-            let v = read_bookmarks()?;
-            match pick_one(&v)? {
-                Some(s) => println!("{}", s),
+            let bookmarks = read_bookmarks()?;
+            match pick_one(&bookmarks)? {
+                Some(bookmark) => println!("{}", bookmark),
                 None => std::process::exit(1),
             }
         }
+        Cmd::Init { shell, command } => match shell {
+            Shell::Fish => {
+                let command = command.unwrap_or("t".to_string());
+
+                println!(
+                    r#"function {command}
+    if test (count $argv) -gt 0
+        cd "$argv[1]"
+        return
+    end
+
+    set p (pathmarks pick)
+    test -n "$p"; and cd "$p"
+end
+alias ts "pathmarks save"
+complete -c {command} -a "(pathmarks list)" "#,
+                    command = command
+                );
+            }
+        },
     }
     Ok(())
 }
