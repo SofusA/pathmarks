@@ -155,7 +155,9 @@ fn main() -> AppResult<()> {
             Err(error) => return Err(error),
         },
         Cmd::Pick => {
-            let bookmarks = read_bookmarks()?;
+            let Ok(bookmarks) = read_bookmarks() else {
+                return Ok(());
+            };
             match pick_one(&bookmarks)? {
                 Some(bookmark) => println!("{}", bookmark),
                 None => std::process::exit(1),
