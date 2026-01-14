@@ -3,14 +3,16 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{Parser, Subcommand};
 use nucleo_picker::nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_picker::nucleo::{Config, Matcher};
 use nucleo_picker::{Picker, render::StrRenderer};
 
 use crate::error::{AppError, AppResult};
+use crate::init::{Shell, init};
 
 mod error;
+mod init;
 
 #[derive(Parser)]
 #[command(name = "pathmarks")]
@@ -36,11 +38,6 @@ enum Cmd {
         shell: Shell,
         command: Option<String>,
     },
-}
-
-#[derive(Copy, Clone, ValueEnum)]
-enum Shell {
-    Fish,
 }
 
 fn main() {
@@ -139,26 +136,7 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
                 None => Ok(None),
             }
         }
-        Cmd::Init { shell, command } => match shell {
-            Shell::Fish => {
-                let command = command.unwrap_or("t".to_string());
-
-                Ok(Some(format!(
-                    r#"function {command}
-    if test (count $argv) -gt 0
-        cd (pathmarks guess $argv[1])
-        return
-    end
-
-    set p (pathmarks pick)
-    test -n "$p"; and cd "$p"
-end
-alias ts "pathmarks save"
-complete -c {command} -a "(pathmarks list)" "#,
-                    command = command
-                )))
-            }
-        },
+        Cmd::Init { shell, command } => Ok(Some(init(shell, command))),
     }
 }
 

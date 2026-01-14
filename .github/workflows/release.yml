@@ -5,19 +5,9 @@ on:
 jobs:
   release:
     name: release ${{ matrix.target }}
-    strategy:
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-    runs-on: ${{ matrix.os }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: taiki-e/upload-rust-binary-action@v1
-        with:
-          bin: color-scheme
-          target: ${{ matrix.target }}
-          zip: all
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish
+        run: cargo publish --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
