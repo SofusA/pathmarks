@@ -103,9 +103,7 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
 
             let bookmarks = read_bookmarks(&bookmarks_file)?;
 
-            if let Some((best, _score)) =
-                best_bookmark_match(&path, bookmarks.iter().map(|s| s.as_str()), 100)
-            {
+            if let Some(best) = best_bookmark_match(&path, bookmarks.iter().map(|s| s.as_str())) {
                 return Ok(Some(best.into()));
             }
 
@@ -143,17 +141,22 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
 fn best_bookmark_match<'a>(
     query: &str,
     bookmarks: impl IntoIterator<Item = &'a str>,
-    min_score: u32,
-) -> Option<(&'a str, u32)> {
+) -> Option<&'a str> {
+    let min_score = 100;
     let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
 
-    let results = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart)
+    let results = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart)
         .match_list(bookmarks, &mut matcher);
 
     results
         .into_iter()
-        .max_by_key(|(_, score)| *score)
         .filter(|(_, score)| *score >= min_score)
+        .max_by(|(a_str, a_score), (b_str, b_score)| {
+            a_score
+                .cmp(b_score)
+                .then_with(|| b_str.len().cmp(&a_str.len()))
+        })
+        .map(|(s, _)| s)
 }
 
 fn find_case_insensitive(name: &str) -> Option<PathBuf> {
@@ -218,4 +221,22 @@ fn pick_one(bookmarks: &[String]) -> AppResult<Option<String>> {
         injector.push(bookmark.clone());
     }
     Ok(picker.pick()?.map(|bookmark| bookmark.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn best_with_same_score() {
+        let paths = [
+            "/path/with/many/sub/directories",
+            "/path/with/",
+            "/path/with/many/sub/",
+        ];
+
+        let best = best_bookmark_match("pathwith", paths).unwrap();
+
+        assert_eq!(best, paths[1]);
+    }
 }
