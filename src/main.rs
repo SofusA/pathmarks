@@ -5,9 +5,10 @@ use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
+use nucleo_picker::Picker;
 use nucleo_picker::nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_picker::nucleo::{Config, Matcher};
-use nucleo_picker::{Picker, render::StrRenderer};
+use nucleo_picker::render::PathRenderer;
 
 use crate::error::{AppError, AppResult};
 use crate::init::{Shell, init};
@@ -60,9 +61,7 @@ fn main() {
 fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
     match cli.command {
         Cmd::Save => {
-            let cwd = env::current_dir()
-                .map(|path| path.to_string_lossy().to_string())
-                .map_err(AppError::Io)?;
+            let cwd = env::current_dir().map_err(AppError::Io)?;
             let mut bookmarks = read_bookmarks(&bookmarks_file)?;
             if !bookmarks.iter().any(|bookmark| bookmark == &cwd) {
                 bookmarks.push(cwd);
@@ -79,7 +78,7 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
                 }
                 Some(path)
             } else {
-                pick_one(&bookmarks)?
+                pick_one(&bookmarks)?.and_then(|x| x.to_str().map(|x| x.to_string()))
             };
 
             if let Some(target) = target {
@@ -99,12 +98,14 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
             }
 
             if let Some(guess) = find_case_insensitive(&path) {
-                return Ok(Some(guess.to_string_lossy().into()));
+                return Ok(guess.to_str().map(|x| x.into()));
             };
 
             let bookmarks = read_bookmarks(&bookmarks_file)?;
 
-            if let Some(best) = best_bookmark_match(&path, bookmarks.iter().map(|s| s.as_str())) {
+            if let Some(best) =
+                best_bookmark_match(&path, bookmarks.iter().flat_map(|s| s.to_str()))
+            {
                 return Ok(Some(best.into()));
             }
 
@@ -123,13 +124,18 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
         }
         Cmd::List => {
             let out = merged_directories(bookmarks_file)?;
+            let out: Vec<_> = out
+                .into_iter()
+                .flat_map(|x| x.to_str().map(|x| x.to_string()))
+                .collect();
+
             Ok(Some(out.join("\n")))
         }
         Cmd::Pick => {
             let directories = merged_directories(bookmarks_file)?;
 
             match pick_one(&directories)? {
-                Some(bookmark) => Ok(Some(bookmark)),
+                Some(bookmark) => Ok(bookmark.to_str().map(|x| x.into())),
                 None => Ok(None),
             }
         }
@@ -137,25 +143,24 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
     }
 }
 
-fn merged_directories(bookmarks_file: PathBuf) -> AppResult<Vec<String>> {
-    let bookmarks: Vec<String> = read_bookmarks(&bookmarks_file)?;
+fn merged_directories(bookmarks_file: PathBuf) -> AppResult<Vec<PathBuf>> {
+    let bookmarks = read_bookmarks(&bookmarks_file)?;
     let merged_directories = merge_with_cwd_dirs(bookmarks)?;
 
     let cwd = env::current_dir()?;
     let mut out = Vec::with_capacity(merged_directories.len());
 
-    for path_string in merged_directories {
-        let path = Path::new(&path_string);
-        if let Some(relative) = relative_if_descendant(&cwd, path) {
+    for path in merged_directories {
+        if let Some(relative) = relative_if_descendant(&cwd, &path) {
             if let Some(s) = relative.to_str() {
                 if s != "." {
-                    out.push(s.to_string());
+                    out.push(s.into());
                 }
             } else {
-                out.push(path_string);
+                out.push(path);
             }
         } else {
-            out.push(path_string);
+            out.push(path);
         }
     }
 
@@ -188,7 +193,7 @@ fn find_case_insensitive(name: &str) -> Option<PathBuf> {
     for entry in fs::read_dir(".").ok()? {
         let entry = entry.ok()?;
         let file_name = entry.file_name();
-        let file_name_str = file_name.to_string_lossy();
+        let file_name_str = file_name.to_str()?;
         if file_name_str.to_lowercase() == wanted {
             return Some(PathBuf::from(file_name_str.to_string()));
         }
@@ -210,7 +215,7 @@ fn bookmarks_file() -> AppResult<PathBuf> {
     Ok(file)
 }
 
-fn read_bookmarks(file: &Path) -> AppResult<Vec<String>> {
+fn read_bookmarks(file: &Path) -> AppResult<Vec<PathBuf>> {
     let file = File::open(file)?;
     let reader = BufReader::new(file);
     let mut bookmarks = Vec::new();
@@ -218,13 +223,13 @@ fn read_bookmarks(file: &Path) -> AppResult<Vec<String>> {
         let line = line?;
         let line = line.trim().to_string();
         if !line.is_empty() {
-            bookmarks.push(line);
+            bookmarks.push(PathBuf::from(line));
         }
     }
     Ok(bookmarks)
 }
 
-fn write_bookmarks(bookmarks: &[String], file: &PathBuf) -> AppResult<()> {
+fn write_bookmarks(bookmarks: &[PathBuf], file: &PathBuf) -> AppResult<()> {
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -233,7 +238,8 @@ fn write_bookmarks(bookmarks: &[String], file: &PathBuf) -> AppResult<()> {
         .truncate(true)
         .create(true)
         .open(file)?;
-    for bookmark in bookmarks {
+
+    for bookmark in bookmarks.iter().flat_map(|x| x.to_str()) {
         writeln!(file, "{}", bookmark)?;
     }
     Ok(())
@@ -243,16 +249,19 @@ fn is_absolute(p: &str) -> bool {
     Path::new(p).is_absolute()
 }
 
-fn pick_one(bookmarks: &[String]) -> AppResult<Option<String>> {
-    let mut picker = Picker::new(StrRenderer);
+fn pick_one(bookmarks: &[PathBuf]) -> AppResult<Option<PathBuf>> {
+    let mut picker = Picker::new(PathRenderer);
+
     let injector = picker.injector();
-    for bookmark in bookmarks {
-        injector.push(bookmark.clone());
+
+    for b in bookmarks {
+        injector.push(b.clone());
     }
-    Ok(picker.pick()?.map(|bookmark| bookmark.to_string()))
+
+    Ok(picker.pick()?.cloned())
 }
 
-fn list_child_dirs(dir: &Path, include_hidden: bool) -> std::io::Result<Vec<String>> {
+fn list_child_dirs(dir: &Path, include_hidden: bool) -> std::io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
 
     for entry_res in fs::read_dir(dir)? {
@@ -279,7 +288,7 @@ fn list_child_dirs(dir: &Path, include_hidden: bool) -> std::io::Result<Vec<Stri
             if !include_hidden && name.starts_with('.') {
                 continue;
             }
-            out.push(name.to_string());
+            out.push(entry.path());
         }
     }
 
@@ -287,13 +296,14 @@ fn list_child_dirs(dir: &Path, include_hidden: bool) -> std::io::Result<Vec<Stri
     Ok(out)
 }
 
-fn merge_with_cwd_dirs(paths: Vec<String>) -> std::io::Result<Vec<String>> {
-    let cwd = env::current_dir()?;
-    let cwd_dirs = list_child_dirs(&cwd, false)?;
-    let mut seen: HashSet<String> = HashSet::with_capacity(paths.len() + cwd_dirs.len());
-    let mut merged = Vec::with_capacity(paths.len() + cwd_dirs.len());
+fn merge_with_cwd_dirs(paths: Vec<PathBuf>) -> std::io::Result<Vec<PathBuf>> {
+    let current_dir = env::current_dir()?;
+    let current_dir_sub_dirs = list_child_dirs(&current_dir, false)?;
 
-    for directory in cwd_dirs {
+    let mut seen = HashSet::with_capacity(paths.len() + current_dir_sub_dirs.len());
+    let mut merged = Vec::with_capacity(paths.len() + current_dir_sub_dirs.len());
+
+    for directory in current_dir_sub_dirs {
         if seen.insert(directory.clone()) {
             merged.push(directory);
         }
@@ -309,37 +319,23 @@ fn merge_with_cwd_dirs(paths: Vec<String>) -> std::io::Result<Vec<String>> {
 }
 
 fn relative_if_descendant(base: &Path, child: &Path) -> Option<PathBuf> {
-    let (base_abs, child_abs) = match (base.canonicalize(), child.canonicalize()) {
-        (Ok(b), Ok(c)) => (b, c),
-        _ => return best_effort_relative_if_descendant(base, child),
-    };
-
-    if !child_abs.starts_with(&base_abs) {
-        return None;
-    }
-    child_abs.strip_prefix(&base_abs).ok().map(|rel| {
-        if rel.as_os_str().is_empty() {
-            PathBuf::from(".")
-        } else {
-            rel.to_path_buf()
-        }
-    })
-}
-
-fn best_effort_relative_if_descendant(base: &Path, child: &Path) -> Option<PathBuf> {
     if !base.is_absolute() || !child.is_absolute() {
         return None;
     }
     if !child.starts_with(base) {
         return None;
     }
-    child.strip_prefix(base).ok().map(|rel| {
-        if rel.as_os_str().is_empty() {
-            PathBuf::from(".")
-        } else {
-            rel.to_path_buf()
-        }
-    })
+
+    child
+        .strip_prefix(base)
+        .map(|rel| {
+            if rel.as_os_str().is_empty() {
+                PathBuf::from(".")
+            } else {
+                rel.to_path_buf()
+            }
+        })
+        .ok()
 }
 
 #[cfg(test)]
