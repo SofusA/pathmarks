@@ -122,39 +122,44 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
             Ok(None)
         }
         Cmd::List => {
-            let bookmarks: Vec<String> = read_bookmarks(&bookmarks_file)?;
-            let merged_directories = merge_with_cwd_dirs(bookmarks)?;
-
-            let cwd = env::current_dir()?;
-            let mut out = Vec::with_capacity(merged_directories.len());
-
-            for path_string in merged_directories {
-                let path = Path::new(&path_string);
-                if let Some(relative) = relative_if_descendant(&cwd, path) {
-                    if let Some(s) = relative.to_str() {
-                        out.push(s.to_string());
-                    } else {
-                        out.push(path_string);
-                    }
-                } else {
-                    out.push(path_string);
-                }
-            }
-
+            let out = merged_directories(bookmarks_file)?;
             Ok(Some(out.join("\n")))
         }
         Cmd::Pick => {
-            let Ok(bookmarks) = read_bookmarks(&bookmarks_file) else {
-                return Ok(None);
-            };
+            let directories = merged_directories(bookmarks_file)?;
 
-            match pick_one(&bookmarks)? {
+            match pick_one(&directories)? {
                 Some(bookmark) => Ok(Some(bookmark)),
                 None => Ok(None),
             }
         }
         Cmd::Init { shell, command } => Ok(Some(init(shell, command))),
     }
+}
+
+fn merged_directories(bookmarks_file: PathBuf) -> AppResult<Vec<String>> {
+    let bookmarks: Vec<String> = read_bookmarks(&bookmarks_file)?;
+    let merged_directories = merge_with_cwd_dirs(bookmarks)?;
+
+    let cwd = env::current_dir()?;
+    let mut out = Vec::with_capacity(merged_directories.len());
+
+    for path_string in merged_directories {
+        let path = Path::new(&path_string);
+        if let Some(relative) = relative_if_descendant(&cwd, path) {
+            if let Some(s) = relative.to_str() {
+                if s != "." {
+                    out.push(s.to_string());
+                }
+            } else {
+                out.push(path_string);
+            }
+        } else {
+            out.push(path_string);
+        }
+    }
+
+    Ok(out)
 }
 
 fn best_bookmark_match<'a>(
@@ -284,11 +289,11 @@ fn list_child_dirs(dir: &Path, include_hidden: bool) -> std::io::Result<Vec<Stri
 
 fn merge_with_cwd_dirs(paths: Vec<String>) -> std::io::Result<Vec<String>> {
     let cwd = env::current_dir()?;
-    let mut cwd_dirs = list_child_dirs(&cwd, false)?;
+    let cwd_dirs = list_child_dirs(&cwd, false)?;
     let mut seen: HashSet<String> = HashSet::with_capacity(paths.len() + cwd_dirs.len());
     let mut merged = Vec::with_capacity(paths.len() + cwd_dirs.len());
 
-    for directory in cwd_dirs.drain(..) {
+    for directory in cwd_dirs {
         if seen.insert(directory.clone()) {
             merged.push(directory);
         }
@@ -304,18 +309,14 @@ fn merge_with_cwd_dirs(paths: Vec<String>) -> std::io::Result<Vec<String>> {
 }
 
 fn relative_if_descendant(base: &Path, child: &Path) -> Option<PathBuf> {
-    // Canonicalize when possible to handle symlinks and `..`
     let (base_abs, child_abs) = match (base.canonicalize(), child.canonicalize()) {
         (Ok(b), Ok(c)) => (b, c),
         _ => return best_effort_relative_if_descendant(base, child),
     };
 
-    // If roots differ (e.g., different Windows drives), not a descendant
-    // Note: starts_with handles proper component boundaries
     if !child_abs.starts_with(&base_abs) {
         return None;
     }
-    // Compute a relative path since it *is* a descendant
     child_abs.strip_prefix(&base_abs).ok().map(|rel| {
         if rel.as_os_str().is_empty() {
             PathBuf::from(".")
@@ -325,7 +326,6 @@ fn relative_if_descendant(base: &Path, child: &Path) -> Option<PathBuf> {
     })
 }
 
-/// Fallback without canonicalization (best-effort).
 fn best_effort_relative_if_descendant(base: &Path, child: &Path) -> Option<PathBuf> {
     if !base.is_absolute() || !child.is_absolute() {
         return None;
