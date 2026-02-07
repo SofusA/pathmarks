@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
@@ -121,8 +122,26 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
             Ok(None)
         }
         Cmd::List => {
-            let bookmarks = read_bookmarks(&bookmarks_file)?;
-            Ok(Some(bookmarks.join("\n")))
+            let bookmarks: Vec<String> = read_bookmarks(&bookmarks_file)?;
+            let merged_directories = merge_with_cwd_dirs(bookmarks)?;
+
+            let cwd = env::current_dir()?;
+            let mut out = Vec::with_capacity(merged_directories.len());
+
+            for path_string in merged_directories {
+                let path = Path::new(&path_string);
+                if let Some(relative) = relative_if_descendant(&cwd, path) {
+                    if let Some(s) = relative.to_str() {
+                        out.push(s.to_string());
+                    } else {
+                        out.push(path_string);
+                    }
+                } else {
+                    out.push(path_string);
+                }
+            }
+
+            Ok(Some(out.join("\n")))
         }
         Cmd::Pick => {
             let Ok(bookmarks) = read_bookmarks(&bookmarks_file) else {
@@ -226,6 +245,101 @@ fn pick_one(bookmarks: &[String]) -> AppResult<Option<String>> {
         injector.push(bookmark.clone());
     }
     Ok(picker.pick()?.map(|bookmark| bookmark.to_string()))
+}
+
+fn list_child_dirs(dir: &Path, include_hidden: bool) -> std::io::Result<Vec<String>> {
+    let mut out = Vec::new();
+
+    for entry_res in fs::read_dir(dir)? {
+        let entry = entry_res?;
+        let file_type = entry.file_type()?;
+
+        let is_dir = if file_type.is_symlink() {
+            let target = fs::read_link(entry.path())?;
+            let target_abs = if target.is_absolute() {
+                target
+            } else {
+                dir.join(target)
+            };
+            target_abs.is_dir()
+        } else {
+            file_type.is_dir()
+        };
+
+        if !is_dir {
+            continue;
+        }
+
+        if let Some(name) = entry.file_name().to_str() {
+            if !include_hidden && name.starts_with('.') {
+                continue;
+            }
+            out.push(name.to_string());
+        }
+    }
+
+    out.sort_unstable();
+    Ok(out)
+}
+
+fn merge_with_cwd_dirs(paths: Vec<String>) -> std::io::Result<Vec<String>> {
+    let cwd = env::current_dir()?;
+    let mut cwd_dirs = list_child_dirs(&cwd, false)?;
+    let mut seen: HashSet<String> = HashSet::with_capacity(paths.len() + cwd_dirs.len());
+    let mut merged = Vec::with_capacity(paths.len() + cwd_dirs.len());
+
+    for directory in cwd_dirs.drain(..) {
+        if seen.insert(directory.clone()) {
+            merged.push(directory);
+        }
+    }
+
+    for path in paths {
+        if seen.insert(path.clone()) {
+            merged.push(path);
+        }
+    }
+
+    Ok(merged)
+}
+
+fn relative_if_descendant(base: &Path, child: &Path) -> Option<PathBuf> {
+    // Canonicalize when possible to handle symlinks and `..`
+    let (base_abs, child_abs) = match (base.canonicalize(), child.canonicalize()) {
+        (Ok(b), Ok(c)) => (b, c),
+        _ => return best_effort_relative_if_descendant(base, child),
+    };
+
+    // If roots differ (e.g., different Windows drives), not a descendant
+    // Note: starts_with handles proper component boundaries
+    if !child_abs.starts_with(&base_abs) {
+        return None;
+    }
+    // Compute a relative path since it *is* a descendant
+    child_abs.strip_prefix(&base_abs).ok().map(|rel| {
+        if rel.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            rel.to_path_buf()
+        }
+    })
+}
+
+/// Fallback without canonicalization (best-effort).
+fn best_effort_relative_if_descendant(base: &Path, child: &Path) -> Option<PathBuf> {
+    if !base.is_absolute() || !child.is_absolute() {
+        return None;
+    }
+    if !child.starts_with(base) {
+        return None;
+    }
+    child.strip_prefix(base).ok().map(|rel| {
+        if rel.as_os_str().is_empty() {
+            PathBuf::from(".")
+        } else {
+            rel.to_path_buf()
+        }
+    })
 }
 
 #[cfg(test)]

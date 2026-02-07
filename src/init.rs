@@ -24,7 +24,7 @@ pub fn init(shell: Shell, command: Option<String>) -> String {
     test -n "$p"; and cd "$p"
 end
 alias {command}s "pathmarks save"
-complete -c {command} -a "(pathmarks list)" "#,
+complete --no-files --keep-order -c {command} -a "(pathmarks list)""#,
                 command = command
             )
         }
