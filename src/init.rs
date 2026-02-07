@@ -25,7 +25,7 @@ pub fn init(shell: Shell, command: Option<String>) -> String {
 end
 
 
-function {command}i'
+function {command}i
     while true
         set -l dest (pathmarks pick)
         set -l code $status

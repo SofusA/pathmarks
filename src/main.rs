@@ -5,17 +5,17 @@ use std::path::{Path, PathBuf};
 use std::{env, io};
 
 use clap::{Parser, Subcommand};
-use nucleo_picker::Picker;
 use nucleo_picker::nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_picker::nucleo::{Config, Matcher};
 
 use crate::error::{AppError, AppResult};
-use crate::index_renderer::IndexPathRenderer;
 use crate::init::{Shell, init};
+use crate::pickers::{pick_one, pick_one_last_dim};
 
 mod error;
 mod index_renderer;
 mod init;
+mod pickers;
 
 #[derive(Parser)]
 #[command(name = "pathmarks")]
@@ -133,9 +133,14 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
             Ok(Some(out.join("\n")))
         }
         Cmd::Pick => {
-            let directories = merged_directories(bookmarks_file)?;
+            let bookmarks = read_bookmarks(&bookmarks_file)?;
+            let current_dir = env::current_dir()?;
 
-            match pick_one(&directories)? {
+            let relative_bookmarks = map_relative_paths(&current_dir, bookmarks);
+            let sub_directories = list_child_dirs(&current_dir, false)?;
+            let relative_sub_directories = map_relative_paths(&current_dir, sub_directories);
+
+            match pick_one_last_dim(&relative_sub_directories, &relative_bookmarks)? {
                 Some(bookmark) => Ok(bookmark.to_str().map(|x| x.into())),
                 None => Ok(None),
             }
@@ -149,23 +154,8 @@ fn merged_directories(bookmarks_file: PathBuf) -> AppResult<Vec<PathBuf>> {
     let merged_directories = merge_with_cwd_dirs(bookmarks)?;
 
     let cwd = env::current_dir()?;
-    let mut out = Vec::with_capacity(merged_directories.len());
 
-    for path in merged_directories {
-        if let Some(relative) = relative_if_descendant(&cwd, &path) {
-            if let Some(s) = relative.to_str() {
-                if s != "." {
-                    out.push(s.into());
-                }
-            } else {
-                out.push(path);
-            }
-        } else {
-            out.push(path);
-        }
-    }
-
-    Ok(out)
+    Ok(map_relative_paths(&cwd, merged_directories))
 }
 
 fn best_bookmark_match<'a>(
@@ -250,16 +240,6 @@ fn is_absolute(p: &str) -> bool {
     Path::new(p).is_absolute()
 }
 
-fn pick_one(bookmarks: &[PathBuf]) -> AppResult<Option<&PathBuf>> {
-    let mut picker = Picker::new(IndexPathRenderer::new(bookmarks));
-    let mut injector = picker.injector();
-    injector.extend(0..bookmarks.len());
-
-    let selected_idx = picker.pick()?.copied();
-
-    Ok(selected_idx.map(|i| &bookmarks[i]))
-}
-
 fn list_child_dirs(dir: &Path, include_hidden: bool) -> io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
 
@@ -331,6 +311,16 @@ fn relative_if_descendant(base: &Path, child: &Path) -> Option<PathBuf> {
             }
         })
         .ok()
+}
+
+fn map_relative_paths<I>(base: &Path, paths: I) -> Vec<PathBuf>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    paths
+        .into_iter()
+        .map(|p| relative_if_descendant(base, &p).unwrap_or(p))
+        .collect()
 }
 
 #[cfg(test)]
