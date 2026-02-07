@@ -1,19 +1,20 @@
 use std::collections::HashSet;
-use std::env;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::{env, io};
 
 use clap::{Parser, Subcommand};
 use nucleo_picker::Picker;
 use nucleo_picker::nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo_picker::nucleo::{Config, Matcher};
-use nucleo_picker::render::PathRenderer;
 
 use crate::error::{AppError, AppResult};
+use crate::index_renderer::IndexPathRenderer;
 use crate::init::{Shell, init};
 
 mod error;
+mod index_renderer;
 mod init;
 
 #[derive(Parser)]
@@ -249,19 +250,17 @@ fn is_absolute(p: &str) -> bool {
     Path::new(p).is_absolute()
 }
 
-fn pick_one(bookmarks: &[PathBuf]) -> AppResult<Option<PathBuf>> {
-    let mut picker = Picker::new(PathRenderer);
+fn pick_one(bookmarks: &[PathBuf]) -> AppResult<Option<&PathBuf>> {
+    let mut picker = Picker::new(IndexPathRenderer::new(bookmarks));
+    let mut injector = picker.injector();
+    injector.extend(0..bookmarks.len());
 
-    let injector = picker.injector();
+    let selected_idx = picker.pick()?.copied();
 
-    for b in bookmarks {
-        injector.push(b.clone());
-    }
-
-    Ok(picker.pick()?.cloned())
+    Ok(selected_idx.map(|i| &bookmarks[i]))
 }
 
-fn list_child_dirs(dir: &Path, include_hidden: bool) -> std::io::Result<Vec<PathBuf>> {
+fn list_child_dirs(dir: &Path, include_hidden: bool) -> io::Result<Vec<PathBuf>> {
     let mut out = Vec::new();
 
     for entry_res in fs::read_dir(dir)? {
@@ -296,22 +295,18 @@ fn list_child_dirs(dir: &Path, include_hidden: bool) -> std::io::Result<Vec<Path
     Ok(out)
 }
 
-fn merge_with_cwd_dirs(paths: Vec<PathBuf>) -> std::io::Result<Vec<PathBuf>> {
+fn merge_with_cwd_dirs(paths: Vec<PathBuf>) -> io::Result<Vec<PathBuf>> {
     let current_dir = env::current_dir()?;
     let current_dir_sub_dirs = list_child_dirs(&current_dir, false)?;
 
-    let mut seen = HashSet::with_capacity(paths.len() + current_dir_sub_dirs.len());
-    let mut merged = Vec::with_capacity(paths.len() + current_dir_sub_dirs.len());
+    let capacity = paths.len() + current_dir_sub_dirs.len();
+    let mut seen = HashSet::with_capacity(capacity);
+    let mut merged = Vec::with_capacity(capacity);
 
-    for directory in current_dir_sub_dirs {
-        if seen.insert(directory.clone()) {
+    for directory in current_dir_sub_dirs.into_iter().chain(paths) {
+        if !seen.contains(&directory) {
+            seen.insert(directory.clone());
             merged.push(directory);
-        }
-    }
-
-    for path in paths {
-        if seen.insert(path.clone()) {
-            merged.push(path);
         }
     }
 
