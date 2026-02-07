@@ -66,7 +66,7 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
             if !bookmarks.iter().any(|bookmark| bookmark == &cwd) {
                 bookmarks.push(cwd);
             }
-            write_bookmarks(&bookmarks, bookmarks_file)?;
+            write_bookmarks(&bookmarks, &bookmarks_file)?;
             Ok(None)
         }
         Cmd::Remove { path } => {
@@ -87,7 +87,7 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
                 if bookmarks.len() == before {
                     return Err(AppError::NotFound(target));
                 }
-                write_bookmarks(&bookmarks, bookmarks_file)?;
+                write_bookmarks(&bookmarks, &bookmarks_file)?;
             }
 
             Ok(None)
@@ -117,7 +117,7 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
                     kept.push(bookmark);
                 }
             }
-            write_bookmarks(&kept, bookmarks_file)?;
+            write_bookmarks(&kept, &bookmarks_file)?;
             Ok(None)
         }
         Cmd::List => {
@@ -178,6 +178,11 @@ fn bookmarks_file() -> AppResult<PathBuf> {
     } else {
         return Err(AppError::DataDirectoryNotFound);
     };
+
+    if !file.exists() {
+        write_bookmarks(&[], &file)?;
+    }
+
     Ok(file)
 }
 
@@ -195,7 +200,7 @@ fn read_bookmarks(file: &Path) -> AppResult<Vec<String>> {
     Ok(bookmarks)
 }
 
-fn write_bookmarks(bookmarks: &[String], file: PathBuf) -> AppResult<()> {
+fn write_bookmarks(bookmarks: &[String], file: &PathBuf) -> AppResult<()> {
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent)?;
     }
