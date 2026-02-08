@@ -48,6 +48,7 @@ function {command}i
 end
 
 alias {command}s "pathmarks save"
+alias {command}d "pathmarks remove"
 complete --no-files --keep-order -c {command} -a "(pathmarks list)"
 "#
     )
@@ -82,6 +83,7 @@ fn zsh_init(command: &str) -> String {
 }}
 
 alias {command}s='pathmarks save'
+alias {command}d='pathmarks remove'
 
 # Completion: compdef + helper that feeds candidates from `pathmarks list`
 _{command}() {{
@@ -123,6 +125,7 @@ fn bash_init(command: &str) -> String {
 }}
 
 alias {command}s='pathmarks save'
+alias {command}d='pathmarks remove'
 
 _{command}_complete() {{
   local cur
