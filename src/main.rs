@@ -124,7 +124,12 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
             Ok(None)
         }
         Cmd::List => {
-            let out = merged_directories(bookmarks_file)?;
+            let bookmarks = read_bookmarks(&bookmarks_file)?;
+            let merged_directories = merge_with_cwd_dirs(bookmarks)?;
+
+            let cwd = env::current_dir()?;
+            let out = map_relative_paths(&cwd, merged_directories);
+
             let out: Vec<_> = out
                 .into_iter()
                 .flat_map(|x| x.to_str().map(|x| x.to_string()))
@@ -147,15 +152,6 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
         }
         Cmd::Init { shell, command } => Ok(Some(init(shell, command))),
     }
-}
-
-fn merged_directories(bookmarks_file: PathBuf) -> AppResult<Vec<PathBuf>> {
-    let bookmarks = read_bookmarks(&bookmarks_file)?;
-    let merged_directories = merge_with_cwd_dirs(bookmarks)?;
-
-    let cwd = env::current_dir()?;
-
-    Ok(map_relative_paths(&cwd, merged_directories))
 }
 
 fn best_bookmark_match<'a>(
@@ -320,6 +316,7 @@ where
     paths
         .into_iter()
         .map(|p| relative_if_descendant(base, &p).unwrap_or(p))
+        .filter(|p| p.to_str() != Some("."))
         .collect()
 }
 
