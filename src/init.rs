@@ -49,7 +49,7 @@ end
 
 alias {command}s "pathmarks save"
 alias {command}d "pathmarks remove"
-complete --no-files --keep-order -c {command} -a "(pathmarks list)"
+complete --keep-order -c t -a "(pathmarks list)"
 "#
     )
 }

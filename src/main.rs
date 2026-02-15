@@ -1,4 +1,3 @@
-use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -125,10 +124,8 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
         }
         Cmd::List => {
             let bookmarks = read_bookmarks(&bookmarks_file)?;
-            let merged_directories = merge_with_cwd_dirs(bookmarks)?;
-
-            let cwd = env::current_dir()?;
-            let out = map_relative_paths(&cwd, merged_directories);
+            let current_dir = env::current_dir()?;
+            let out = map_relative_paths(&current_dir, bookmarks);
 
             let out: Vec<_> = out
                 .into_iter()
@@ -269,24 +266,6 @@ fn list_child_dirs(dir: &Path, include_hidden: bool) -> io::Result<Vec<PathBuf>>
 
     out.sort_unstable();
     Ok(out)
-}
-
-fn merge_with_cwd_dirs(paths: Vec<PathBuf>) -> io::Result<Vec<PathBuf>> {
-    let current_dir = env::current_dir()?;
-    let current_dir_sub_dirs = list_child_dirs(&current_dir, false)?;
-
-    let capacity = paths.len() + current_dir_sub_dirs.len();
-    let mut seen = HashSet::with_capacity(capacity);
-    let mut merged = Vec::with_capacity(capacity);
-
-    for directory in current_dir_sub_dirs.into_iter().chain(paths) {
-        if !seen.contains(&directory) {
-            seen.insert(directory.clone());
-            merged.push(directory);
-        }
-    }
-
-    Ok(merged)
 }
 
 fn relative_if_descendant(base: &Path, child: &Path) -> Option<PathBuf> {
