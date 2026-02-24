@@ -173,7 +173,7 @@ fn best_bookmark_match<'a>(
 }
 
 fn find_case_insensitive(name: &str) -> Option<PathBuf> {
-    let wanted = name.to_lowercase();
+    let wanted = name.trim_end_matches('/').to_lowercase();
     for entry in fs::read_dir(".").ok()? {
         let entry = entry.ok()?;
         let file_name = entry.file_name();
