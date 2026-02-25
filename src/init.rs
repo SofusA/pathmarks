@@ -49,7 +49,7 @@ end
 
 alias {command}s "pathmarks save"
 alias {command}d "pathmarks remove"
-complete --keep-order -c {command} --wraps cd -a "(pathmarks list)"
+complete --keep-order -c {command} -d "Pathmarks" --wraps cd -a "(pathmarks list)"
 "#
     )
 }
