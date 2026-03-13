@@ -140,7 +140,8 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
 
             let relative_bookmarks = map_relative_paths(&current_dir, bookmarks);
             let sub_directories = list_child_dirs(&current_dir, false)?;
-            let relative_sub_directories = map_relative_paths(&current_dir, sub_directories);
+            let mut relative_sub_directories = map_relative_paths(&current_dir, sub_directories);
+            relative_sub_directories.push(PathBuf::from(".."));
 
             match pick_one_last_dim(&relative_sub_directories, &relative_bookmarks)? {
                 Some(bookmark) => Ok(bookmark.to_str().map(|x| x.into())),
