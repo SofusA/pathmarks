@@ -97,7 +97,8 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
                 return Ok(Some(path));
             }
 
-            if let Some(guess) = find_case_insensitive(&path) {
+            let current_dir = env::current_dir()?;
+            if let Some(guess) = find_case_insensitive(&current_dir, &path) {
                 return Ok(guess.to_str().map(|x| x.into()));
             };
 
@@ -159,7 +160,7 @@ fn best_bookmark_match<'a>(
     let min_score = 100;
     let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
 
-    let results = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart)
+    let results = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart)
         .match_list(bookmarks, &mut matcher);
 
     results
@@ -173,44 +174,26 @@ fn best_bookmark_match<'a>(
         .map(|(s, _)| s)
 }
 
-fn find_case_insensitive(path: &str) -> Option<PathBuf> {
-    let components: Vec<String> = path
-        .trim_end_matches('/')
-        .split('/')
-        .map(|s| s.to_lowercase())
-        .collect();
+fn find_case_insensitive(root: &Path, path: &str) -> Option<PathBuf> {
+    let mut dirs: Vec<String> = Vec::new();
 
-    fn recurse(dir: &Path, components: &[String]) -> Option<PathBuf> {
-        if components.is_empty() {
-            return Some(dir.to_path_buf());
-        }
-
-        let wanted = &components[0];
-
-        for entry in fs::read_dir(dir).ok()? {
-            let entry = entry.ok()?;
-            let file_name = entry.file_name();
-            let file_name_str = file_name.to_str()?.to_lowercase();
-
-            if file_name_str == *wanted {
-                let new_path = entry.path();
-
-                if components.len() == 1 {
-                    return Some(new_path);
-                }
-
-                if entry.file_type().ok()?.is_dir()
-                    && let Some(found) = recurse(&new_path, &components[1..])
-                {
-                    return Some(found);
+    fn walk(current: &Path, list: &mut Vec<String>) {
+        if let Ok(entries) = fs::read_dir(current) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    if let Some(s) = path.to_str() {
+                        list.push(s.to_string());
+                    }
+                    walk(&path, list);
                 }
             }
         }
-
-        None
     }
 
-    recurse(Path::new("."), &components)
+    walk(root, &mut dirs);
+
+    best_bookmark_match(path, dirs.iter().map(|s| s.as_str())).map(PathBuf::from)
 }
 
 fn bookmarks_file() -> AppResult<PathBuf> {
@@ -346,7 +329,7 @@ mod tests {
 
     #[test]
     fn test_find_case_insensitive_nested() {
-        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
 
         let dir_path = root.join("Dir");
@@ -354,13 +337,53 @@ mod tests {
 
         fs::create_dir_all(&subdir_path).unwrap();
 
-        let original_dir = std::env::current_dir().unwrap();
-        std::env::set_current_dir(root).unwrap();
+        let found = find_case_insensitive(root, "dIr/sUbDiR").unwrap();
 
-        let found = find_case_insensitive("dIr/sUbDiR").unwrap();
+        assert_eq!(found, subdir_path);
+    }
 
-        std::env::set_current_dir(original_dir).unwrap();
+    #[test]
+    fn test_find_case_insensitive_nested_2() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
 
-        assert_eq!(found, PathBuf::from("./Dir/SubDir"));
+        let dir_path = root.join("Dir");
+        let subdir_path = dir_path.join("SubDir");
+
+        fs::create_dir_all(&subdir_path).unwrap();
+
+        let found = find_case_insensitive(root, "dirsub").unwrap();
+
+        assert_eq!(found, subdir_path);
+    }
+
+    #[test]
+    fn test_find_case_insensitive_nested_3() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        let dir_path = root.join("directory");
+        let subdir_path = dir_path.join("SubDir");
+
+        fs::create_dir_all(&subdir_path).unwrap();
+
+        let found = find_case_insensitive(root, "dirtory").unwrap();
+
+        assert_eq!(found, dir_path);
+    }
+
+    #[test]
+    fn test_find_case_insensitive_nested_4() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        let dir_path = root.join("directory");
+        let subdir_path = dir_path.join("SubDir");
+
+        fs::create_dir_all(&subdir_path).unwrap();
+
+        let found = find_case_insensitive(root, "subdir").unwrap();
+
+        assert_eq!(found, subdir_path);
     }
 }
