@@ -1,6 +1,6 @@
 [package]
 name = "pathmarks"
-version = "0.1.11"
+version = "0.1.12"
 edition = "2024"
 description = "Simple path bookmarks for your shell"
 license = "MIT"

@@ -178,13 +178,17 @@ fn best_bookmark_match<'a>(
 fn find_fuzzy(root: &Path, query: &str) -> Option<PathBuf> {
     let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
 
-    let dir = fs::read_dir(root)
-        .ok()?
-        .filter_map(|entry| entry.ok())
-        .map(|entry| entry.file_name().to_string_lossy().into_owned());
+    let dir_names = fs::read_dir(root).ok()?.filter_map(|entry| {
+        let entry = entry.ok()?;
+        if entry.file_type().ok()?.is_dir() {
+            Some(entry.file_name().to_string_lossy().into_owned())
+        } else {
+            None
+        }
+    });
 
     let results = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart)
-        .match_list(dir, &mut matcher);
+        .match_list(dir_names, &mut matcher);
 
     results
         .into_iter()
@@ -215,8 +219,12 @@ fn find_case_insensitive(root: &Path, query: &str) -> Option<PathBuf> {
 
         for entry in fs::read_dir(&current).ok()? {
             let entry = entry.ok()?;
-            let entry_file_name = entry.file_name();
-            let name = entry_file_name.to_string_lossy();
+
+            if !entry.file_type().ok()?.is_dir() {
+                continue;
+            }
+
+            let name = entry.file_name().to_string_lossy().into_owned();
 
             if name.eq_ignore_ascii_case(&wanted) {
                 matched = Some(entry.path());
@@ -403,6 +411,23 @@ mod tests {
         fs::create_dir_all(&subdir_path).unwrap();
 
         let found = find_case_insensitive(root, "subdir");
+
+        assert_eq!(found, None);
+    }
+
+    #[test]
+    fn test_find_case_insensitive_not_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        let dir_path = root.join("Dir");
+
+        fs::create_dir_all(&dir_path).unwrap();
+
+        let file_path = dir_path.join("testfile.txt");
+        fs::write(&file_path, "hello").unwrap();
+
+        let found = find_case_insensitive(root, "testf");
 
         assert_eq!(found, None);
     }
