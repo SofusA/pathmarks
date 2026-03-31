@@ -42,6 +42,8 @@ enum Cmd {
     },
 }
 
+const MIN_MATCH_SCORE: u32 = 60;
+
 fn main() {
     let cli = Cli::parse();
     let Ok(bookmark_path) = bookmarks_file() else {
@@ -157,15 +159,14 @@ fn best_bookmark_match<'a>(
     query: &str,
     bookmarks: impl IntoIterator<Item = &'a str>,
 ) -> Option<&'a str> {
-    let min_score = 100;
     let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
 
-    let results = Pattern::parse(query, CaseMatching::Ignore, Normalization::Smart)
+    let results = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart)
         .match_list(bookmarks, &mut matcher);
 
     results
         .into_iter()
-        .filter(|(_, score)| *score >= min_score)
+        .filter(|(_, score)| *score >= MIN_MATCH_SCORE)
         .max_by(|(a_str, a_score), (b_str, b_score)| {
             a_score
                 .cmp(b_score)
@@ -174,26 +175,59 @@ fn best_bookmark_match<'a>(
         .map(|(s, _)| s)
 }
 
-fn find_case_insensitive(root: &Path, path: &str) -> Option<PathBuf> {
-    let mut dirs: Vec<String> = Vec::new();
+fn find_fuzzy(root: &Path, query: &str) -> Option<PathBuf> {
+    let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
 
-    fn walk(current: &Path, list: &mut Vec<String>) {
-        if let Ok(entries) = fs::read_dir(current) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    if let Some(s) = path.to_str() {
-                        list.push(s.to_string());
-                    }
-                    walk(&path, list);
-                }
-            }
-        }
+    let dir = fs::read_dir(root)
+        .ok()?
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned());
+
+    let results = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart)
+        .match_list(dir, &mut matcher);
+
+    results
+        .into_iter()
+        .filter(|(_, score)| *score >= MIN_MATCH_SCORE)
+        .max_by(|(a_str, a_score), (b_str, b_score)| {
+            a_score
+                .cmp(b_score)
+                .then_with(|| b_str.len().cmp(&a_str.len()))
+        })
+        .map(|(s, _)| root.join(s))
+}
+
+fn find_case_insensitive(root: &Path, query: &str) -> Option<PathBuf> {
+    if let Some(fuzzy) = find_fuzzy(root, query) {
+        return Some(fuzzy);
     }
 
-    walk(root, &mut dirs);
+    let components: Vec<_> = query
+        .trim_end_matches('/')
+        .split('/')
+        .map(|s| s.to_lowercase())
+        .collect();
 
-    best_bookmark_match(path, dirs.iter().map(|s| s.as_str())).map(PathBuf::from)
+    let mut current = root.to_path_buf();
+
+    for wanted in components {
+        let mut matched = None;
+
+        for entry in fs::read_dir(&current).ok()? {
+            let entry = entry.ok()?;
+            let entry_file_name = entry.file_name();
+            let name = entry_file_name.to_string_lossy();
+
+            if name.eq_ignore_ascii_case(&wanted) {
+                matched = Some(entry.path());
+                break;
+            }
+        }
+
+        current = matched?;
+    }
+
+    Some(current)
 }
 
 fn bookmarks_file() -> AppResult<PathBuf> {
@@ -343,47 +377,33 @@ mod tests {
     }
 
     #[test]
-    fn test_find_case_insensitive_nested_2() {
+    fn test_find_case_insensitive_fuzzy() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        let dir_1 = root.join("Test_Project");
+        let dir_2 = root.join("other_directory");
+
+        fs::create_dir_all(&dir_1).unwrap();
+        fs::create_dir_all(&dir_2).unwrap();
+
+        let found = find_case_insensitive(root, "tesproj").unwrap();
+
+        assert_eq!(found, dir_1);
+    }
+
+    #[test]
+    fn test_find_case_insensitive_not_fuzzy_sub() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
 
         let dir_path = root.join("Dir");
-        let subdir_path = dir_path.join("SubDir");
+        let subdir_path = dir_path.join("SubDirectory");
 
         fs::create_dir_all(&subdir_path).unwrap();
 
-        let found = find_case_insensitive(root, "dirsub").unwrap();
+        let found = find_case_insensitive(root, "subdir");
 
-        assert_eq!(found, subdir_path);
-    }
-
-    #[test]
-    fn test_find_case_insensitive_nested_3() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-
-        let dir_path = root.join("directory");
-        let subdir_path = dir_path.join("SubDir");
-
-        fs::create_dir_all(&subdir_path).unwrap();
-
-        let found = find_case_insensitive(root, "dirtory").unwrap();
-
-        assert_eq!(found, dir_path);
-    }
-
-    #[test]
-    fn test_find_case_insensitive_nested_4() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-
-        let dir_path = root.join("directory");
-        let subdir_path = dir_path.join("SubDir");
-
-        fs::create_dir_all(&subdir_path).unwrap();
-
-        let found = find_case_insensitive(root, "subdir").unwrap();
-
-        assert_eq!(found, subdir_path);
+        assert_eq!(found, None);
     }
 }
