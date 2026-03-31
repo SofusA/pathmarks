@@ -173,17 +173,44 @@ fn best_bookmark_match<'a>(
         .map(|(s, _)| s)
 }
 
-fn find_case_insensitive(name: &str) -> Option<PathBuf> {
-    let wanted = name.trim_end_matches('/').to_lowercase();
-    for entry in fs::read_dir(".").ok()? {
-        let entry = entry.ok()?;
-        let file_name = entry.file_name();
-        let file_name_str = file_name.to_str()?;
-        if file_name_str.to_lowercase() == wanted {
-            return Some(PathBuf::from(file_name_str.to_string()));
+fn find_case_insensitive(path: &str) -> Option<PathBuf> {
+    let components: Vec<String> = path
+        .trim_end_matches('/')
+        .split('/')
+        .map(|s| s.to_lowercase())
+        .collect();
+
+    fn recurse(dir: &Path, components: &[String]) -> Option<PathBuf> {
+        if components.is_empty() {
+            return Some(dir.to_path_buf());
         }
+
+        let wanted = &components[0];
+
+        for entry in fs::read_dir(dir).ok()? {
+            let entry = entry.ok()?;
+            let file_name = entry.file_name();
+            let file_name_str = file_name.to_str()?.to_lowercase();
+
+            if file_name_str == *wanted {
+                let new_path = entry.path();
+
+                if components.len() == 1 {
+                    return Some(new_path);
+                }
+
+                if entry.file_type().ok()?.is_dir()
+                    && let Some(found) = recurse(&new_path, &components[1..])
+                {
+                    return Some(found);
+                }
+            }
+        }
+
+        None
     }
-    None
+
+    recurse(Path::new("."), &components)
 }
 
 fn bookmarks_file() -> AppResult<PathBuf> {
@@ -315,5 +342,25 @@ mod tests {
         let best = best_bookmark_match("pathwith", paths).unwrap();
 
         assert_eq!(best, paths[1]);
+    }
+
+    #[test]
+    fn test_find_case_insensitive_nested() {
+        let temp = tempfile::tempdir().expect("failed to create temp dir");
+        let root = temp.path();
+
+        let dir_path = root.join("Dir");
+        let subdir_path = dir_path.join("SubDir");
+
+        fs::create_dir_all(&subdir_path).unwrap();
+
+        let original_dir = std::env::current_dir().unwrap();
+        std::env::set_current_dir(root).unwrap();
+
+        let found = find_case_insensitive("dIr/sUbDiR").unwrap();
+
+        std::env::set_current_dir(original_dir).unwrap();
+
+        assert_eq!(found, PathBuf::from("./Dir/SubDir"));
     }
 }
