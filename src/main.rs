@@ -33,7 +33,7 @@ enum Cmd {
     Prune,
     List,
     Guess {
-        path: String,
+        paths: Vec<String>,
     },
     Pick,
     Init {
@@ -94,25 +94,39 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
 
             Ok(None)
         }
-        Cmd::Guess { path } => {
-            if is_absolute(&path) {
-                return Ok(Some(path));
+        Cmd::Guess { paths } => {
+            let Some(first) = paths.first().cloned() else {
+                return Ok(None);
+            };
+
+            if is_absolute(&first) {
+                return Ok(Some(first));
             }
 
             let current_dir = env::current_dir()?;
-            if let Some(guess) = find_case_insensitive(&current_dir, &path) {
-                return Ok(guess.to_str().map(|x| x.into()));
-            };
 
-            let bookmarks = read_bookmarks(&bookmarks_file)?;
+            let mut current = current_dir;
 
-            if let Some(best) =
-                best_bookmark_match(&path, bookmarks.iter().flat_map(|s| s.to_str()))
-            {
-                return Ok(Some(best.into()));
+            for segment in &paths {
+                match find_case_insensitive(&current, segment) {
+                    Some(next) => current = next,
+                    None => {
+                        let joined = paths.join("/");
+
+                        let bookmarks = read_bookmarks(&bookmarks_file)?;
+
+                        if let Some(best) =
+                            best_bookmark_match(&joined, bookmarks.iter().flat_map(|s| s.to_str()))
+                        {
+                            return Ok(Some(best.into()));
+                        }
+
+                        return Ok(Some(joined));
+                    }
+                }
             }
 
-            Ok(Some(path))
+            Ok(current.to_str().map(|x| x.to_string()))
         }
         Cmd::Prune => {
             let bookmarks = read_bookmarks(&bookmarks_file)?;

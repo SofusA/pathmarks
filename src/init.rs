@@ -22,7 +22,7 @@ fn fish_init(command: &str) -> String {
     format!(
         r#"function {command}
     if test (count $argv) -gt 0
-        cd (pathmarks guess $argv[1])
+        cd (pathmarks guess $argv)
         return
     end
 
