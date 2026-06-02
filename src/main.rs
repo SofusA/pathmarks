@@ -94,39 +94,37 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
 
             Ok(None)
         }
+
         Cmd::Guess { paths } => {
-            let Some(first) = paths.first().cloned() else {
+            let Some(first) = paths.first() else {
                 return Ok(None);
             };
 
-            if is_absolute(&first) {
-                return Ok(Some(first));
+            if is_absolute(first) {
+                return Ok(Some(first.clone()));
             }
 
+            let bookmarks = read_bookmarks(&bookmarks_file)?;
             let current_dir = env::current_dir()?;
 
-            let mut current = current_dir;
+            let mut current = match find_case_insensitive(&current_dir, first) {
+                Some(path) => path,
+                None => {
+                    match best_bookmark_match(first, bookmarks.iter().flat_map(|s| s.to_str())) {
+                        Some(bookmark) => PathBuf::from(bookmark),
+                        None => return Ok(Some(paths.join("/"))),
+                    }
+                }
+            };
 
-            for segment in &paths {
+            for segment in paths.iter().skip(1) {
                 match find_case_insensitive(&current, segment) {
                     Some(next) => current = next,
-                    None => {
-                        let joined = paths.join("/");
-
-                        let bookmarks = read_bookmarks(&bookmarks_file)?;
-
-                        if let Some(best) =
-                            best_bookmark_match(&joined, bookmarks.iter().flat_map(|s| s.to_str()))
-                        {
-                            return Ok(Some(best.into()));
-                        }
-
-                        return Ok(Some(joined));
-                    }
+                    None => return Ok(Some(current.join(segment).to_string_lossy().into_owned())),
                 }
             }
 
-            Ok(current.to_str().map(|x| x.to_string()))
+            Ok(Some(current.to_string_lossy().into_owned()))
         }
         Cmd::Prune => {
             let bookmarks = read_bookmarks(&bookmarks_file)?;
