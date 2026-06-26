@@ -1,4 +1,4 @@
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::{env, io};
@@ -63,7 +63,8 @@ fn main() {
 fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
     match cli.command {
         Cmd::Save => {
-            let cwd = env::current_dir().map_err(AppError::Io)?;
+            let cwd = env::current_dir()?.canonicalize()?;
+
             let mut bookmarks = read_bookmarks(&bookmarks_file)?;
             if !bookmarks.iter().any(|bookmark| bookmark == &cwd) {
                 bookmarks.push(cwd);
@@ -80,7 +81,7 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
                 }
                 Some(path)
             } else {
-                pick_one(&bookmarks)?.and_then(|x| x.to_str().map(|x| x.to_string()))
+                pick_one(&bookmarks)?.map(|x| x.to_string_lossy().into_owned())
             };
 
             if let Some(target) = target {
@@ -128,12 +129,8 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
         }
         Cmd::Prune => {
             let bookmarks = read_bookmarks(&bookmarks_file)?;
-            let mut kept = Vec::new();
-            for bookmark in bookmarks {
-                if Path::new(&bookmark).exists() {
-                    kept.push(bookmark);
-                }
-            }
+            let kept: Vec<_> = bookmarks.into_iter().filter(|p| p.exists()).collect();
+
             write_bookmarks(&kept, &bookmarks_file)?;
             Ok(None)
         }
@@ -144,7 +141,7 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
 
             let out: Vec<_> = out
                 .into_iter()
-                .flat_map(|x| x.to_str().map(|x| x.to_string()))
+                .map(|x| x.to_string_lossy().into_owned())
                 .collect();
 
             Ok(Some(out.join("\n")))
@@ -167,66 +164,58 @@ fn app(cli: Cli, bookmarks_file: PathBuf) -> AppResult<Option<String>> {
     }
 }
 
+fn best_match<'a, I>(query: &str, items: I) -> Option<(&'a str, u32)>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
+
+    Pattern::parse(query, CaseMatching::Smart, Normalization::Smart)
+        .match_list(items, &mut matcher)
+        .into_iter()
+        .filter(|(_, score)| *score >= MIN_MATCH_SCORE)
+        .max_by(|(a_str, a_score), (b_str, b_score)| {
+            a_score
+                .cmp(b_score)
+                .then_with(|| b_str.len().cmp(&a_str.len()))
+        })
+}
+
 fn best_bookmark_match<'a>(
     query: &str,
     bookmarks: impl IntoIterator<Item = &'a str>,
 ) -> Option<&'a str> {
-    let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
-
-    let results = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart)
-        .match_list(bookmarks, &mut matcher);
-
-    results
-        .into_iter()
-        .filter(|(_, score)| *score >= MIN_MATCH_SCORE)
-        .max_by(|(a_str, a_score), (b_str, b_score)| {
-            a_score
-                .cmp(b_score)
-                .then_with(|| b_str.len().cmp(&a_str.len()))
-        })
-        .map(|(s, _)| s)
+    best_match(query, bookmarks).map(|(s, _)| s)
 }
 
 fn find_fuzzy(root: &Path, query: &str) -> Option<PathBuf> {
-    let mut matcher = Matcher::new(Config::DEFAULT.match_paths());
-
-    let dir_names = fs::read_dir(root).ok()?.filter_map(|entry| {
-        let entry = entry.ok()?;
-        if entry.file_type().ok()?.is_dir() {
-            Some(entry.file_name().to_string_lossy().into_owned())
-        } else {
-            None
-        }
-    });
-
-    let results = Pattern::parse(query, CaseMatching::Smart, Normalization::Smart)
-        .match_list(dir_names, &mut matcher);
-
-    results
-        .into_iter()
-        .filter(|(_, score)| *score >= MIN_MATCH_SCORE)
-        .max_by(|(a_str, a_score), (b_str, b_score)| {
-            a_score
-                .cmp(b_score)
-                .then_with(|| b_str.len().cmp(&a_str.len()))
+    let dir_names: Vec<String> = fs::read_dir(root)
+        .ok()?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            if entry.file_type().ok()?.is_dir() {
+                Some(entry.file_name().to_string_lossy().into_owned())
+            } else {
+                None
+            }
         })
-        .map(|(s, _)| root.join(s))
+        .collect();
+
+    best_match(query, dir_names.iter().map(String::as_str)).map(|(name, _)| root.join(name))
 }
 
 fn find_case_insensitive(root: &Path, query: &str) -> Option<PathBuf> {
-    if let Some(fuzzy) = find_fuzzy(root, query) {
+    if !query.contains('/')
+        && let Some(fuzzy) = find_fuzzy(root, query)
+    {
         return Some(fuzzy);
     }
 
-    let components: Vec<_> = query
-        .trim_end_matches('/')
-        .split('/')
-        .map(|s| s.to_lowercase())
-        .collect();
-
     let mut current = root.to_path_buf();
 
-    for wanted in components {
+    for wanted in query.trim_end_matches('/').split('/') {
+        let wanted = wanted.to_lowercase();
+
         let mut matched = None;
 
         for entry in fs::read_dir(&current).ok()? {
@@ -236,9 +225,9 @@ fn find_case_insensitive(root: &Path, query: &str) -> Option<PathBuf> {
                 continue;
             }
 
-            let name = entry.file_name().to_string_lossy().into_owned();
+            let name = entry.file_name();
 
-            if name.eq_ignore_ascii_case(&wanted) {
+            if name.to_string_lossy().to_lowercase() == wanted {
                 matched = Some(entry.path());
                 break;
             }
@@ -251,11 +240,10 @@ fn find_case_insensitive(root: &Path, query: &str) -> Option<PathBuf> {
 }
 
 fn bookmarks_file() -> AppResult<PathBuf> {
-    let file = if let Some(data_dir) = dirs::data_local_dir() {
-        data_dir.join("pathmarks").join("bookmarks.txt")
-    } else {
-        return Err(AppError::DataDirectoryNotFound);
-    };
+    let file = dirs::data_local_dir()
+        .ok_or(AppError::DataDirectoryNotFound)?
+        .join("pathmarks")
+        .join("bookmarks.txt");
 
     if !file.exists() {
         write_bookmarks(&[], &file)?;
@@ -270,7 +258,7 @@ fn read_bookmarks(file: &Path) -> AppResult<Vec<PathBuf>> {
     let mut bookmarks = Vec::new();
     for line in reader.lines() {
         let line = line?;
-        let line = line.trim().to_string();
+        let line = line.trim();
         if !line.is_empty() {
             bookmarks.push(PathBuf::from(line));
         }
@@ -278,19 +266,25 @@ fn read_bookmarks(file: &Path) -> AppResult<Vec<PathBuf>> {
     Ok(bookmarks)
 }
 
-fn write_bookmarks(bookmarks: &[PathBuf], file: &PathBuf) -> AppResult<()> {
+fn write_bookmarks(bookmarks: &[PathBuf], file: &Path) -> AppResult<()> {
     if let Some(parent) = file.parent() {
         fs::create_dir_all(parent)?;
     }
-    let mut file = OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .create(true)
-        .open(file)?;
 
-    for bookmark in bookmarks.iter().flat_map(|x| x.to_str()) {
-        writeln!(file, "{}", bookmark)?;
+    let tmp = file.with_extension("tmp");
+
+    {
+        let mut out = File::create(&tmp)?;
+
+        for bookmark in bookmarks {
+            writeln!(out, "{}", bookmark.display())?;
+        }
+
+        out.flush()?;
     }
+
+    fs::rename(tmp, file)?;
+
     Ok(())
 }
 
@@ -442,5 +436,94 @@ mod tests {
         let found = find_case_insensitive(root, "testf");
 
         assert_eq!(found, None);
+    }
+
+    #[test]
+    fn shortest_path_wins_when_scores_equal() {
+        let paths = [
+            "/path/with/many/sub/directories",
+            "/path/with/",
+            "/path/with/many/sub/",
+        ];
+
+        let best = best_bookmark_match("pathwith", paths).unwrap();
+
+        assert_eq!(best, "/path/with/");
+    }
+
+    #[test]
+    fn best_match_returns_score_and_value() {
+        let items = ["foobar", "foo", "bar"];
+
+        let result = best_match("foo", items).unwrap();
+
+        assert_eq!(result.0, "foo");
+    }
+
+    #[test]
+    fn write_bookmarks_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+
+        let file = dir.path().join("bookmarks.txt");
+
+        let bookmarks = vec![PathBuf::from("/tmp/a"), PathBuf::from("/tmp/b")];
+
+        write_bookmarks(&bookmarks, &file).unwrap();
+
+        let loaded = read_bookmarks(&file).unwrap();
+
+        assert_eq!(loaded, bookmarks);
+    }
+
+    #[test]
+    fn nested_query_does_not_use_root_fuzzy_match() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        fs::create_dir_all(root.join("Project")).unwrap();
+        fs::create_dir_all(root.join("Dir").join("SubDir")).unwrap();
+
+        let found = find_case_insensitive(root, "dir/subdir").unwrap();
+
+        assert_eq!(found, root.join("Dir").join("SubDir"));
+    }
+
+    #[test]
+    fn canonicalized_paths_deduplicate() {
+        let temp = tempfile::tempdir().unwrap();
+
+        let canonical = temp.path().canonicalize().unwrap();
+
+        let alternative = canonical.join("..").join(canonical.file_name().unwrap());
+
+        assert_eq!(canonical, alternative.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn test_find_case_insensitive_unicode() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        let dir = root.join("Risengrød");
+
+        fs::create_dir_all(&dir).unwrap();
+
+        let found = find_case_insensitive(root, "risengrød").unwrap();
+
+        assert_eq!(found, dir);
+    }
+
+    #[test]
+    fn test_find_case_insensitive_unicode_nested() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+
+        let subdir = root.join("Rød").join("Grød");
+
+        fs::create_dir_all(&subdir).unwrap();
+
+        let found = find_case_insensitive(root, "rød/grød").unwrap();
+
+        assert_eq!(found, subdir);
     }
 }
